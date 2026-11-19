@@ -1,0 +1,15 @@
+target/
+Cargo.lock
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dylib
+.pytest_cache/
+.coverage
+dist/
+build/
+.venv/
+venv/
+.DS_Store
