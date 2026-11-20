@@ -66,6 +66,86 @@ impl SpatialTableIndex {
             .map(|node| self.spans[node.data].clone())
             .collect()
     }
+
+    /// Stitch broken table rows across page boundaries via X-column projection & Y-band clustering
+    #[pyo3(signature = (y_tol=4.5, x_col_tol=18.0))]
+    pub fn reconstruct_grid(&self, y_tol: f64, x_col_tol: f64) -> Vec<Vec<String>> {
+        if self.spans.is_empty() {
+            return Vec::new();
+        }
+
+        // 1. Project spans onto continuous virtual Y-axis
+        let mut items: Vec<(f64, f64, &str)> = self
+            .spans
+            .iter()
+            .map(|s| {
+                let vy = (s.page as f64) * self.page_stride + (s.y0 + s.y1) * 0.5;
+                let vx = (s.x0 + s.x1) * 0.5;
+                (vy, vx, s.text.as_str())
+            })
+            .collect();
+
+        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 2. Discover canonical column anchors via 1D clustering on X centers
+        let mut xs: Vec<f64> = items.iter().map(|i| i.1).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut col_anchors: Vec<f64> = Vec::new();
+        for x in xs {
+            if let Some(last) = col_anchors.last_mut() {
+                if (x - *last).abs() <= x_col_tol {
+                    *last = (*last + x) * 0.5;
+                    continue;
+                }
+            }
+            col_anchors.push(x);
+        }
+
+        // 3. Group into horizontal row bands
+        let mut rows: Vec<Vec<(f64, &str)>> = Vec::new();
+        let mut current_y = items[0].0;
+        let mut current_row: Vec<(f64, &str)> = Vec::new();
+
+        for (vy, vx, text) in items {
+            if (vy - current_y).abs() <= y_tol {
+                current_row.push((vx, text));
+            } else {
+                rows.push(current_row);
+                current_row = vec![(vx, text)];
+                current_y = vy;
+            }
+        }
+        if !current_row.is_empty() {
+            rows.push(current_row);
+        }
+
+        // 4. Align cells to nearest column anchor
+        let num_cols = col_anchors.len();
+        rows.into_iter()
+            .map(|row| {
+                let mut grid_row = vec![String::new(); num_cols];
+                for (vx, text) in row {
+                    let mut best_col = 0;
+                    let mut best_dist = f64::MAX;
+                    for (c_idx, &anchor) in col_anchors.iter().enumerate() {
+                        let d = (vx - anchor).abs();
+                        if d < best_dist {
+                            best_dist = d;
+                            best_col = c_idx;
+                        }
+                    }
+                    if grid_row[best_col].is_empty() {
+                        grid_row[best_col] = text.to_string();
+                    } else {
+                        grid_row[best_col].push(' ');
+                        grid_row[best_col].push_str(text);
+                    }
+                }
+                grid_row
+            })
+            .collect()
+    }
 }
 
 #[pymodule]
